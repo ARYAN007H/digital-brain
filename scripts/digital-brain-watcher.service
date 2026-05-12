@@ -1,0 +1,15 @@
+[Unit]
+Description=Digital Brain — Inbox file watcher daemon
+After=digital-brain-pocketbase.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/projects/digital-brain
+ExecStart=%h/Documents/projects/digital-brain/.venv/bin/python -m brain.ingestion.watcher
+Restart=on-failure
+RestartSec=10
+Environment=HOME=%h
+Environment=OLLAMA_KEEP_ALIVE=0
+
+[Install]
+WantedBy=default.target

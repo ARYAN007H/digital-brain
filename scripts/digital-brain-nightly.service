@@ -1,0 +1,9 @@
+[Unit]
+Description=Digital Brain — Nightly surfacing service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Documents/projects/digital-brain
+ExecStart=%h/Documents/projects/digital-brain/.venv/bin/python -m brain.surfacing.nightly
+Environment=HOME=%h
+Environment=OLLAMA_KEEP_ALIVE=0

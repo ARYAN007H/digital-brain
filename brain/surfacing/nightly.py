@@ -18,6 +18,7 @@ from brain.router import Router
 from brain.synapses import SynapseManager
 from brain.vault import Vault
 from brain.vectors import VectorStore
+from brain.wikilink_scanner import WikilinkScanner
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,14 @@ class Surfacer:
         self.generate_daily_surface()
         self.generate_strong_synapses()
         self.generate_weekly_patterns()
+        self._scan_wikilinks()
         logger.info("Nightly surfacing complete")
+
+    def _scan_wikilinks(self):
+        """Scan entire vault for wikilinks and reinforce synapses."""
+        scanner = WikilinkScanner(vault=self.vault, synapses=self.synapses)
+        stats = scanner.scan_vault()
+        logger.info(f"Wikilink scan: {stats}")
 
     def generate_brain_stats(self):
         """Generate _meta/brain-stats.md with full brain health report."""

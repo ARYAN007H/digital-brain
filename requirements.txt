@@ -9,6 +9,7 @@ google-generativeai     # Cloud AI — Gemini 2.0 Flash (free tier)
 supabase                # Cloud mirror — pgvector + storage
 python-dotenv           # Config — .env file loading
 pyyaml                  # Serialization — neuron YAML frontmatter
+rich                    # Terminal UI — panels, tables, progress, live dashboard
 
 # ── Dev dependencies ──────────────────────────────────────
 # pytest

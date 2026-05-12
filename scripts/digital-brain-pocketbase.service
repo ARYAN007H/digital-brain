@@ -1,0 +1,14 @@
+[Unit]
+Description=Digital Brain — PocketBase synapse store
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/projects/digital-brain
+ExecStart=%h/Documents/projects/digital-brain/bin/pocketbase serve --dir %h/Documents/projects/digital-brain/data/pocketbase
+Restart=on-failure
+RestartSec=5
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target

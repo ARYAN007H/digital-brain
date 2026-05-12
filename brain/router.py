@@ -11,9 +11,13 @@ Includes RAM safety: file-based lock prevents concurrent Ollama use.
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 import os
 import re
+import sqlite3
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +68,106 @@ class BrainLock:
         self.release()
 
 
+class ConversationHistory:
+    """SQLite-backed rolling conversation history.
+
+    Stores last N exchanges per session. Auto-expires after idle timeout.
+    """
+
+    def __init__(self, db_path: Optional[Path] = None, max_exchanges: int = 3,
+                 idle_timeout_min: int = 30):
+        self._db_path = str(db_path or Paths.BRAIN_DB)
+        self._max = max_exchanges
+        self._idle_timeout = idle_timeout_min
+        self._local = threading.local()
+        self._session_id: Optional[str] = None
+        self._init_db()
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn") or self._local.conn is None:
+            self._local.conn = sqlite3.connect(self._db_path)
+            self._local.conn.row_factory = sqlite3.Row
+            self._local.conn.execute("PRAGMA journal_mode=WAL")
+        return self._local.conn
+
+    def _init_db(self):
+        conn = self._get_conn()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                role        TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                content     TEXT NOT NULL,
+                mode        TEXT,
+                provider    TEXT,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conv_session
+            ON conversation_history(session_id, created_at)
+        """)
+        conn.commit()
+
+    def _get_or_create_session(self) -> str:
+        """Get current session or create new one if idle too long."""
+        conn = self._get_conn()
+        if self._session_id:
+            row = conn.execute(
+                """SELECT created_at FROM conversation_history
+                   WHERE session_id = ? ORDER BY created_at DESC LIMIT 1""",
+                (self._session_id,),
+            ).fetchone()
+            if row:
+                last = datetime.fromisoformat(row["created_at"])
+                elapsed = (datetime.now(timezone.utc) - last).total_seconds() / 60
+                if elapsed < self._idle_timeout:
+                    return self._session_id
+
+        # New session
+        self._session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return self._session_id
+
+    def add_exchange(self, query: str, response: str, mode: str = "", provider: str = ""):
+        """Record a query-response exchange."""
+        session = self._get_or_create_session()
+        conn = self._get_conn()
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO conversation_history (session_id, role, content, mode, provider, created_at)
+               VALUES (?, 'user', ?, ?, ?, ?)""",
+            (session, query, mode, provider, now),
+        )
+        conn.execute(
+            """INSERT INTO conversation_history (session_id, role, content, mode, provider, created_at)
+               VALUES (?, 'assistant', ?, ?, ?, ?)""",
+            (session, response[:1000], mode, provider, now),
+        )
+        conn.commit()
+
+    def get_context(self) -> str:
+        """Get recent conversation context as a formatted string."""
+        session = self._get_or_create_session()
+        conn = self._get_conn()
+        rows = conn.execute(
+            """SELECT role, content FROM conversation_history
+               WHERE session_id = ?
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (session, self._max * 2),
+        ).fetchall()
+
+        if not rows:
+            return ""
+
+        exchanges = []
+        for row in reversed(rows):
+            prefix = "User" if row["role"] == "user" else "Brain"
+            exchanges.append(f"{prefix}: {row['content'][:300]}")
+
+        return "Previous conversation:\n" + "\n".join(exchanges)
+
+
 class Router:
     """AI query routing engine."""
 
@@ -81,6 +185,7 @@ class Router:
         self._lock = BrainLock()
         self._groq_client = None
         self._gemini_model = None
+        self._history = ConversationHistory()
 
     # ── Mode Detection ───────────────────────────────────
 
@@ -226,29 +331,29 @@ class Router:
     ) -> dict:
         """Route a query to the appropriate AI.
 
+        Injects conversation history and semantic context.
         Returns {mode, response, provider, query}.
         """
         mode = self.detect_mode(query)
         clean_query = self.strip_mode_tag(query)
 
-        # Inject context if available
-        full_prompt = clean_query
+        # Build full prompt with conversation history + semantic context
+        parts = []
+        history = self._history.get_context()
+        if history:
+            parts.append(history)
         if context:
-            full_prompt = (
-                f"Context from memory:\n{context}\n\n"
-                f"Query: {clean_query}"
-            )
+            parts.append(f"Context from memory:\n{context}")
+        parts.append(f"Query: {clean_query}")
+        full_prompt = "\n\n".join(parts)
 
         provider = "unknown"
         response = ""
 
         if mode in Brain.LOCAL_MODES:
-            # RECALL / CONNECT / DO → local LLM
             provider = "ollama"
             response = self.ask_local(full_prompt, system_prompt)
-
         elif mode in Brain.CLOUD_MODES:
-            # DECIDE / PREDICT / CREATE → Groq → Gemini → local
             try:
                 provider = "groq"
                 response = self.ask_groq(full_prompt, system_prompt)
@@ -261,6 +366,9 @@ class Router:
                     logger.warning(f"Gemini failed ({e2}), falling back to local")
                     provider = "ollama-fallback"
                     response = self.ask_local(full_prompt, system_prompt)
+
+        # Record exchange in history
+        self._history.add_exchange(clean_query, response, mode=mode, provider=provider)
 
         return {
             "mode": mode,

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from brain.config import Brain
+from brain.dedup import DedupEngine
 from brain.ingestion.parser import chunk_content, detect_source, extract_text
 from brain.models import AtomicNeuron, MemoryNeuron
 from brain.queue import WriteQueue
@@ -28,6 +29,7 @@ from brain.sync.git_sync import GitSync
 from brain.synapses import SynapseManager
 from brain.vault import Vault
 from brain.vectors import VectorStore
+from brain.wikilink_scanner import WikilinkScanner
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,8 @@ class Processor:
         synapses: Optional[SynapseManager] = None,
         queue: Optional[WriteQueue] = None,
         git: Optional[GitSync] = None,
+        dedup: Optional[DedupEngine] = None,
+        wikilinks: Optional[WikilinkScanner] = None,
     ):
         self.router = router or Router()
         self.vault = vault or Vault()
@@ -93,13 +97,24 @@ class Processor:
         self.synapses = synapses or SynapseManager()
         self.queue = queue or WriteQueue()
         self.git = git or GitSync()
+        self.dedup = dedup or DedupEngine()
+        self.wikilinks = wikilinks or WikilinkScanner(vault=self.vault, synapses=self.synapses)
 
-    def process_file(self, filepath: Path) -> dict:
+    def process_file(self, filepath: Path, force: bool = False) -> dict:
         """Full ingestion pipeline for a single file.
+
+        Args:
+            filepath: File to ingest.
+            force: If True, bypass dedup and re-ingest.
 
         Returns summary dict with counts of created neurons.
         """
         logger.info(f"Processing: {filepath.name}")
+
+        # Deduplication check
+        is_new, content_hash = self.dedup.check_and_record(filepath, force=force)
+        if not is_new:
+            return {"status": "skipped", "reason": "duplicate"}
 
         source = detect_source(filepath)
         text = extract_text(filepath)
@@ -142,10 +157,19 @@ class Processor:
         # 8. Create executive neurons from tasks
         task_neurons = self._create_task_neurons(all_tasks, source)
 
-        # 9. Queue cloud sync
+        # 9. Scan for wikilinks in new neurons
+        new_ids = [n.id for n in all_atomic + task_neurons]
+        if memory:
+            new_ids.append(memory.id)
+        self.wikilinks.scan_neurons(new_ids)
+
+        # 10. Queue cloud sync
         self._queue_sync(all_atomic, memory, task_neurons)
 
-        # 10. Git commit
+        # 11. Record neuron IDs in dedup table
+        self.dedup.record_neurons(content_hash, new_ids)
+
+        # 12. Git commit
         self.git.auto_commit(source=source)
 
         result = {

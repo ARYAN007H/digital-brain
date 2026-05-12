@@ -1,15 +1,21 @@
 """
 Digital Brain CLI — the primary query interface.
 
+Rich terminal UI with panels, tables, progress bars, and color.
+
 Usage:
     brain query "what do I know about X?"
     brain recall "topic"
     brain decide "should I do X or Y?"
-    brain ingest <file>
+    brain ingest <file> [--force]
     brain watch
     brain stats
     brain surface
     brain voice
+    brain dashboard
+    brain ide [--ingest-existing]
+    brain setup-pb
+    brain scan-links
 """
 
 from __future__ import annotations
@@ -30,12 +36,22 @@ def setup_logging(verbose: bool = False):
     )
 
 
+def _get_console():
+    """Get a rich Console, or None if rich not installed."""
+    try:
+        from rich.console import Console
+        return Console()
+    except ImportError:
+        return None
+
+
 def cmd_query(args):
     """Route a query through the brain."""
     from brain.router import Router
     from brain.vault import Vault
     from brain.vectors import VectorStore
 
+    console = _get_console()
     router = Router()
     vault = Vault()
     vault.sync_id_counters()
@@ -58,9 +74,27 @@ def cmd_query(args):
 
     result = router.route(" ".join(args.query), context=context)
 
-    print(f"\n🧠 [{result['mode']}] via {result['provider']}\n")
-    print(result["response"])
-    print()
+    if console:
+        from rich.panel import Panel
+        from rich.text import Text
+        mode_colors = {
+            "RECALL": "cyan", "CONNECT": "blue", "DO": "green",
+            "DECIDE": "yellow", "PREDICT": "magenta", "CREATE": "red",
+        }
+        color = mode_colors.get(result["mode"], "white")
+        header = f"[bold {color}]{result['mode']}[/] via [dim]{result['provider']}[/dim]"
+        console.print()
+        console.print(Panel(
+            result["response"],
+            title=f"🧠 {header}",
+            border_style=color,
+            padding=(1, 2),
+        ))
+        console.print()
+    else:
+        print(f"\n🧠 [{result['mode']}] via {result['provider']}\n")
+        print(result["response"])
+        print()
 
 
 def cmd_ingest(args):
@@ -68,18 +102,48 @@ def cmd_ingest(args):
     from brain.ingestion.processor import Processor
     from brain.vault import Vault
 
+    console = _get_console()
     vault = Vault()
     vault.sync_id_counters()
     processor = Processor()
 
     filepath = Path(args.file).resolve()
     if not filepath.exists():
-        print(f"File not found: {filepath}")
+        msg = f"File not found: {filepath}"
+        if console:
+            console.print(f"[bold red]✗[/] {msg}")
+        else:
+            print(msg)
         sys.exit(1)
 
-    print(f"Ingesting: {filepath.name}")
-    result = processor.process_file(filepath)
-    print(f"✅ {result}")
+    force = getattr(args, "force", False)
+
+    if console:
+        from rich.progress import Progress, SpinnerColumn, TextColumn
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task(f"Ingesting {filepath.name}...", total=None)
+            result = processor.process_file(filepath, force=force)
+            progress.update(task, completed=True)
+
+        if result.get("status") == "skipped":
+            reason = result.get("reason", "unknown")
+            console.print(f"[yellow]⏭[/] Skipped: {reason}")
+            if reason == "duplicate":
+                console.print("[dim]  Use --force to re-ingest[/dim]")
+        else:
+            console.print(f"[bold green]✅ Ingested:[/] {filepath.name}")
+            console.print(f"   Atoms: {result.get('atomic_count', 0)}")
+            console.print(f"   Memory: {result.get('memory_id', 'none')}")
+            console.print(f"   Tasks: {result.get('task_count', 0)}")
+            console.print(f"   Chunks: {result.get('chunks_processed', 0)}")
+    else:
+        print(f"Ingesting: {filepath.name}")
+        result = processor.process_file(filepath, force=force)
+        print(f"✅ {result}")
 
 
 def cmd_watch(args):
@@ -90,23 +154,79 @@ def cmd_watch(args):
 
 def cmd_stats(args):
     """Show brain health stats."""
+    from brain.queue import WriteQueue
     from brain.surfacing.nightly import Surfacer
-    surfacer = Surfacer()
-    surfacer.generate_brain_stats()
+    from brain.synapses import SynapseManager
+    from brain.vault import Vault
+    from brain.vectors import VectorStore
 
-    stats_path = Path("vault/_meta/brain-stats.md")
-    if stats_path.exists():
-        print(stats_path.read_text())
+    console = _get_console()
+    vault = Vault()
+    vectors = VectorStore()
+    synapses = SynapseManager()
+    queue = WriteQueue()
+
+    if console:
+        from rich.panel import Panel
+        from rich.table import Table
+
+        # Neuron table
+        counts = vault.count_neurons()
+        nt = Table(title="🧠 Neurons", show_header=True, header_style="bold cyan")
+        nt.add_column("Region", style="white")
+        nt.add_column("Count", justify="right", style="green")
+        icons = {"prefrontal": "🎯", "hippocampus": "🧩", "creative": "💡",
+                 "predictive": "📊", "amygdala": "❤️", "executive": "✅"}
+        for r in ["prefrontal", "hippocampus", "creative", "predictive", "amygdala", "executive"]:
+            nt.add_row(f"{icons.get(r, '')} {r}", str(counts.get(r, 0)))
+        nt.add_section()
+        nt.add_row("[bold]Total[/]", f"[bold yellow]{counts.get('total', 0)}[/]")
+        console.print(nt)
+
+        # Vector table
+        vc = vectors.count()
+        vt = Table(title="🔍 Vectors", show_header=True, header_style="bold magenta")
+        vt.add_column("Collection", style="white")
+        vt.add_column("Count", justify="right", style="green")
+        for r in ["prefrontal", "hippocampus", "creative", "predictive", "executive"]:
+            vt.add_row(r, str(vc.get(r, 0)))
+        console.print(vt)
+
+        # Queue status
+        qc = queue.total_count()
+        console.print(Panel(
+            f"⏳ Pending: [yellow]{qc['pending']}[/]  "
+            f"⚙️ Processing: [cyan]{qc['processing']}[/]  "
+            f"✅ Done: [green]{qc['done']}[/]  "
+            f"💀 Dead: [red]{qc.get('dead_letter', 0)}[/]",
+            title="📡 Sync Queue",
+            border_style="blue",
+        ))
+
+        # Inbox
+        inbox = vault.inbox_count()
+        syn = synapses.total_count()
+        console.print(f"\n🔗 Synapses: [bold]{syn}[/]  📥 Inbox: [bold]{inbox}[/]\n")
     else:
-        print("No stats yet. Ingest some files first!")
+        surfacer = Surfacer()
+        surfacer.generate_brain_stats()
+        stats_path = Path("vault/_meta/brain-stats.md")
+        if stats_path.exists():
+            print(stats_path.read_text())
+        else:
+            print("No stats yet. Ingest some files first!")
 
 
 def cmd_surface(args):
     """Run proactive surfacing."""
     from brain.surfacing.nightly import Surfacer
+    console = _get_console()
     surfacer = Surfacer()
     surfacer.generate_all()
-    print("✅ Surfacing complete. Check vault/_meta/")
+    if console:
+        console.print("[bold green]✅[/] Surfacing complete. Check vault/_meta/")
+    else:
+        print("✅ Surfacing complete. Check vault/_meta/")
 
 
 def cmd_voice(args):
@@ -185,6 +305,34 @@ def cmd_voice(args):
         stt.unload()
 
 
+def cmd_dashboard(args):
+    """Launch the live TUI dashboard."""
+    from brain.dashboard import run_dashboard
+    run_dashboard()
+
+
+def cmd_ide(args):
+    """IDE conversation ingestion."""
+    from brain.ingestion.ide_connector import IDEWatcher
+    watcher = IDEWatcher()
+    if getattr(args, "ingest_existing", False):
+        watcher.ingest_existing(since_days=getattr(args, "days", 7))
+    else:
+        watcher.run_forever()
+
+
+def cmd_setup_pb(args):
+    """Auto-create PocketBase collections."""
+    from brain.setup_pocketbase import main as pb_main
+    pb_main()
+
+
+def cmd_scan_links(args):
+    """Scan vault for wikilinks and reinforce synapses."""
+    from brain.wikilink_scanner import main as scan_main
+    scan_main()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="🧠 Digital Brain CLI",
@@ -209,6 +357,8 @@ def main():
     # ingest
     p_ingest = sub.add_parser("ingest", aliases=["i"], help="Ingest a file")
     p_ingest.add_argument("file")
+    p_ingest.add_argument("--force", "-f", action="store_true",
+                          help="Force re-ingest even if duplicate")
     p_ingest.set_defaults(func=cmd_ingest)
 
     # watch
@@ -226,6 +376,26 @@ def main():
     # voice
     p_voice = sub.add_parser("voice", help="Voice query session")
     p_voice.set_defaults(func=cmd_voice)
+
+    # dashboard
+    p_dash = sub.add_parser("dashboard", aliases=["dash"],
+                            help="Live TUI dashboard")
+    p_dash.set_defaults(func=cmd_dashboard)
+
+    # ide
+    p_ide = sub.add_parser("ide", help="IDE conversation ingestion")
+    p_ide.add_argument("--ingest-existing", action="store_true",
+                       help="Ingest recent existing conversations")
+    p_ide.add_argument("--days", type=int, default=7)
+    p_ide.set_defaults(func=cmd_ide)
+
+    # setup-pb
+    p_pb = sub.add_parser("setup-pb", help="Auto-create PocketBase collections")
+    p_pb.set_defaults(func=cmd_setup_pb)
+
+    # scan-links
+    p_links = sub.add_parser("scan-links", help="Scan wikilinks, reinforce synapses")
+    p_links.set_defaults(func=cmd_scan_links)
 
     args = parser.parse_args()
     setup_logging(getattr(args, "verbose", False))
