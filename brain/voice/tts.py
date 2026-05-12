@@ -40,22 +40,40 @@ def speak(text: str, output_file: Optional[str] = None):
     if not clean.strip():
         return
 
-    if output_file:
-        # Save to file
-        cmd = (
-            f'echo "{_escape_shell(clean)}" | '
-            f'{piper_bin} --model {piper_model} --output_file {output_file}'
-        )
-    else:
-        # Play directly via aplay
-        cmd = (
-            f'echo "{_escape_shell(clean)}" | '
-            f'{piper_bin} --model {piper_model} --output_raw | '
-            f'aplay -r 22050 -f S16_LE -t raw -q'
-        )
-
     try:
-        subprocess.run(cmd, shell=True, timeout=60, check=False)
+        if output_file:
+            # Save to file
+            subprocess.run(
+                [
+                    str(piper_bin),
+                    "--model",
+                    str(piper_model),
+                    "--output_file",
+                    output_file,
+                ],
+                input=clean,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        else:
+            # Play directly via aplay
+            piper_proc = subprocess.Popen(
+                [str(piper_bin), "--model", str(piper_model), "--output_raw"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            aplay_proc = subprocess.Popen(
+                ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q"],
+                stdin=piper_proc.stdout,
+            )
+
+            if piper_proc.stdout is not None:
+                piper_proc.stdout.close()
+
+            piper_proc.communicate(clean, timeout=60)
+            aplay_proc.wait(timeout=60)
     except subprocess.TimeoutExpired:
         logger.warning("TTS playback timed out")
     except Exception as e:
@@ -74,8 +92,3 @@ def _clean_for_speech(text: str) -> str:
     clean = re.sub(r"^\s*[-*]\s+", "", clean, flags=re.MULTILINE)  # bullets
     clean = re.sub(r"\n{3,}", "\n\n", clean)           # excess newlines
     return clean.strip()
-
-
-def _escape_shell(text: str) -> str:
-    """Escape text for shell echo command."""
-    return text.replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
