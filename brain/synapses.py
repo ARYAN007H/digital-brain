@@ -11,9 +11,8 @@ import json
 import logging
 from typing import Optional
 
-import requests
 
-from brain.config import API, Brain
+from brain.config import API, Brain, HTTP
 from brain.models import Synapse
 
 logger = logging.getLogger(__name__)
@@ -25,6 +24,8 @@ class SynapseManager:
     def __init__(self, base_url: Optional[str] = None):
         self._base_url = (base_url or API.POCKETBASE_URL).rstrip("/")
         self._api = f"{self._base_url}/api/collections"
+        self._headers = HTTP.build_headers(API.POCKETBASE_AUTH_TOKEN)
+        logger.info("SynapseManager endpoint: %s", HTTP.sanitized_origin(self._base_url, "PocketBase"))
 
     def _url(self, collection: str, record_id: str = "") -> str:
         """Build PocketBase API URL."""
@@ -36,9 +37,9 @@ class SynapseManager:
     def _is_available(self) -> bool:
         """Check if PocketBase is running."""
         try:
-            r = requests.get(f"{self._base_url}/api/health", timeout=2)
+            r = HTTP.request("GET", f"{self._base_url}/api/health", service_name="PocketBase", timeout=2, headers=self._headers)
             return r.status_code == 200
-        except requests.ConnectionError:
+        except Exception:
             return False
 
     # ── Synapse Operations ───────────────────────────────
@@ -48,10 +49,12 @@ class SynapseManager:
         try:
             # Check both directions
             for s, t in [(source_id, target_id), (target_id, source_id)]:
-                r = requests.get(
+                r = HTTP.request("GET",
                     self._url("synapse_scores"),
+                    service_name="PocketBase",
                     params={"filter": f'source_id="{s}" && target_id="{t}"'},
                     timeout=5,
+                    headers=self._headers,
                 )
                 if r.status_code == 200:
                     items = r.json().get("items", [])
@@ -84,8 +87,9 @@ class SynapseManager:
             synapse.reinforce(event, 0)  # sets last_reinforced + supabase_synced
 
             try:
-                requests.patch(
+                HTTP.request("PATCH",
                     self._url("synapse_scores", existing["id"]),
+                    service_name="PocketBase",
                     json={
                         "strength": synapse.strength,
                         "last_reinforced": synapse.last_reinforced,
@@ -93,6 +97,7 @@ class SynapseManager:
                         "supabase_synced": False,
                     },
                     timeout=5,
+                    headers=self._headers,
                 )
             except Exception as e:
                 logger.warning(f"PocketBase update failed: {e}")
@@ -104,8 +109,9 @@ class SynapseManager:
             synapse.reinforce(event, score)
 
             try:
-                requests.post(
+                HTTP.request("POST",
                     self._url("synapse_scores"),
+                    service_name="PocketBase",
                     json={
                         "source_id": synapse.source_id,
                         "target_id": synapse.target_id,
@@ -115,6 +121,7 @@ class SynapseManager:
                         "supabase_synced": False,
                     },
                     timeout=5,
+                    headers=self._headers,
                 )
             except Exception as e:
                 logger.warning(f"PocketBase create failed: {e}")
@@ -125,13 +132,15 @@ class SynapseManager:
         """Get all synapses involving a neuron."""
         synapses = []
         try:
-            r = requests.get(
+            r = HTTP.request("GET",
                 self._url("synapse_scores"),
+                service_name="PocketBase",
                 params={
                     "filter": f'source_id="{neuron_id}" || target_id="{neuron_id}"',
                     "perPage": 100,
                 },
                 timeout=5,
+                headers=self._headers,
             )
             if r.status_code == 200:
                 for item in r.json().get("items", []):
@@ -154,10 +163,12 @@ class SynapseManager:
         """Get the strongest synapses across the brain."""
         synapses = []
         try:
-            r = requests.get(
+            r = HTTP.request("GET",
                 self._url("synapse_scores"),
+                service_name="PocketBase",
                 params={"sort": "-strength", "perPage": limit},
                 timeout=5,
+                headers=self._headers,
             )
             if r.status_code == 200:
                 for item in r.json().get("items", []):
@@ -178,10 +189,12 @@ class SynapseManager:
     def total_count(self) -> int:
         """Total number of synapses."""
         try:
-            r = requests.get(
+            r = HTTP.request("GET",
                 self._url("synapse_scores"),
+                service_name="PocketBase",
                 params={"perPage": 1},
                 timeout=5,
+                headers=self._headers,
             )
             if r.status_code == 200:
                 return r.json().get("totalItems", 0)
@@ -194,8 +207,9 @@ class SynapseManager:
     def set_emotional_tag(self, neuron_id: str, tone: str, urgency: str):
         """Store emotional metadata for a neuron (amygdala region)."""
         try:
-            requests.post(
+            HTTP.request("POST",
                 self._url("emotional_tags"),
+                service_name="PocketBase",
                 json={
                     "neuron_id": neuron_id,
                     "tone": tone,
@@ -203,6 +217,7 @@ class SynapseManager:
                     "flagged": urgency in ("high", "critical"),
                 },
                 timeout=5,
+                headers=self._headers,
             )
         except Exception as e:
             logger.warning(f"Failed to set emotional tag: {e}")
@@ -212,8 +227,9 @@ class SynapseManager:
     def create_task_event(self, neuron_id: str, action: str, due_date: str = ""):
         """Create a task event in executive tracking."""
         try:
-            requests.post(
+            HTTP.request("POST",
                 self._url("task_events"),
+                service_name="PocketBase",
                 json={
                     "neuron_id": neuron_id,
                     "action": action,
@@ -221,6 +237,7 @@ class SynapseManager:
                     "due_date": due_date,
                 },
                 timeout=5,
+                headers=self._headers,
             )
         except Exception as e:
             logger.warning(f"Failed to create task event: {e}")

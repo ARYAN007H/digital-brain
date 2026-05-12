@@ -14,3 +14,8 @@ rich                    # Terminal UI — panels, tables, progress, live dashboa
 # ── Dev dependencies ──────────────────────────────────────
 # pytest
 # pytest-asyncio
+
+streamlit>=1.36.0
+plotly>=5.22.0
+streamlit-autorefresh>=1.0.1
+streamlit-plotly-events>=0.0.6

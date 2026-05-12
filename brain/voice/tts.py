@@ -41,41 +41,44 @@ def speak(text: str, output_file: Optional[str] = None):
     if not clean.strip():
         return
 
+    piper_cmd = [str(piper_bin), "--model", str(piper_model)]
+
     try:
         if output_file:
-            # Save to file
+            # Save to file (no shell)
+            piper_cmd += ["--output_file", str(output_file)]
             subprocess.run(
-                [
-                    str(piper_bin),
-                    "--model",
-                    str(piper_model),
-                    "--output_file",
-                    output_file,
-                ],
-                input=clean.encode("utf-8"),
+                piper_cmd,
+                input=clean,
+                text=True,
                 timeout=_TTS_TIMEOUT_SECONDS,
                 check=False,
             )
         else:
-            # Play directly via aplay
-            piper_proc = subprocess.Popen(
-                [str(piper_bin), "--model", str(piper_model), "--output_raw"],
+            # Play directly via aplay with a safe pipeline
+            p1 = subprocess.Popen(
+                piper_cmd + ["--output_raw"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
-            aplay_proc = subprocess.Popen(
-                ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q"],
-                stdin=piper_proc.stdout,
+            p2 = subprocess.Popen(
+                ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q", "-"],
+                stdin=p1.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-
-            if piper_proc.stdout is not None:
-                piper_proc.stdout.close()
-
-            piper_proc.communicate(clean.encode("utf-8"), timeout=_TTS_TIMEOUT_SECONDS)
-            aplay_proc.wait(timeout=_TTS_TIMEOUT_SECONDS)
+            assert p1.stdin is not None
+            p1.stdin.write(clean)
+            p1.stdin.close()
+            if p1.stdout is not None:
+                p1.stdout.close()
+            p2.wait(timeout=_TTS_TIMEOUT_SECONDS)
+            p1.wait(timeout=_TTS_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        _terminate_process(piper_proc if "piper_proc" in locals() else None)
-        _terminate_process(aplay_proc if "aplay_proc" in locals() else None)
+        _terminate_process(p1 if "p1" in locals() else None)
+        _terminate_process(p2 if "p2" in locals() else None)
         logger.warning("TTS playback timed out")
     except Exception as e:
         logger.error(f"TTS failed: {e}")

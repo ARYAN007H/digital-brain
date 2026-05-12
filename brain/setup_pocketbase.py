@@ -11,9 +11,8 @@ import logging
 import sys
 from typing import Optional
 
-import requests
 
-from brain.config import API
+from brain.config import API, HTTP
 
 logger = logging.getLogger(__name__)
 
@@ -86,22 +85,26 @@ class PocketBaseSetup:
     def __init__(self, base_url: Optional[str] = None):
         self._base_url = (base_url or API.POCKETBASE_URL).rstrip("/")
         self._admin_token: Optional[str] = None
+        self._headers = HTTP.build_headers(API.POCKETBASE_AUTH_TOKEN)
+        logger.info("PocketBase setup endpoint: %s", HTTP.sanitized_origin(self._base_url, "PocketBase"))
 
     def _is_available(self) -> bool:
         """Check if PocketBase is running."""
         try:
-            r = requests.get(f"{self._base_url}/api/health", timeout=3)
+            r = HTTP.request("GET", f"{self._base_url}/api/health", service_name="PocketBase", timeout=3, headers=self._headers)
             return r.status_code == 200
-        except requests.ConnectionError:
+        except Exception:
             return False
 
     def _get_existing_collections(self) -> set[str]:
         """Get names of existing collections."""
         try:
-            r = requests.get(
+            r = HTTP.request("GET",
                 f"{self._base_url}/api/collections",
+                service_name="PocketBase",
                 params={"perPage": 100},
                 timeout=5,
+                headers=self._headers,
             )
             if r.status_code == 200:
                 return {c["name"] for c in r.json().get("items", [])}
@@ -118,14 +121,16 @@ class PocketBaseSetup:
     def _create_collection(self, spec: dict) -> bool:
         """Create a single collection."""
         try:
-            r = requests.post(
+            r = HTTP.request("POST",
                 f"{self._base_url}/api/collections",
+                service_name="PocketBase",
                 json={
                     "name": spec["name"],
                     "type": spec.get("type", "base"),
                     "schema": spec["schema"],
                 },
                 timeout=10,
+                headers=self._headers,
             )
             if r.status_code in (200, 201):
                 logger.info(f"  ✅ Created collection: {spec['name']}")

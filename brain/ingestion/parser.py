@@ -9,9 +9,21 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+PDF_SIGNATURE = b"%PDF-"
+
+
+@dataclass
+class ExtractionResult:
+    text: str
+    status: str = "ok"
+    reason: str | None = None
+    exit_cause: str | None = None
 
 # ── Source Type Detection ────────────────────────────────
 
@@ -53,7 +65,7 @@ def detect_source(filepath: Path) -> str:
     return "file"
 
 
-def extract_text(filepath: Path) -> str:
+def extract_text(filepath: Path, timeout_seconds: int = 30) -> ExtractionResult:
     """Extract text content from a file.
 
     Supports: .md, .txt, .json, .py, .html, .pdf (basic).
@@ -61,33 +73,49 @@ def extract_text(filepath: Path) -> str:
     ext = filepath.suffix.lower()
 
     if ext == ".pdf":
-        return _extract_pdf(filepath)
+        return _extract_pdf(filepath, timeout_seconds=timeout_seconds)
     elif ext in (".html", ".htm"):
-        return _extract_html(filepath)
+        return ExtractionResult(text=_extract_html(filepath))
     else:
         # Plain text / markdown / code
         try:
-            return filepath.read_text(encoding="utf-8", errors="ignore")
+            return ExtractionResult(text=filepath.read_text(encoding="utf-8", errors="ignore"))
         except Exception as e:
             logger.error(f"Failed to read {filepath}: {e}")
-            return ""
+            return ExtractionResult(text="", status="error", reason="read_failed")
 
 
-def _extract_pdf(filepath: Path) -> str:
+def _extract_pdf(filepath: Path, timeout_seconds: int = 30) -> ExtractionResult:
     """Basic PDF text extraction. Falls back to empty string."""
     try:
-        import subprocess
+        with filepath.open("rb") as f:
+            sig = f.read(len(PDF_SIGNATURE))
+        if sig != PDF_SIGNATURE:
+            logger.warning("Rejecting PDF extraction due to invalid MIME signature", extra={"file": str(filepath)})
+            return ExtractionResult(text="", status="rejected", reason="invalid_pdf_signature")
+
         result = subprocess.run(
             ["pdftotext", str(filepath), "-"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=timeout_seconds,
         )
         if result.returncode == 0:
-            return result.stdout
+            return ExtractionResult(text=result.stdout)
+        stderr = (result.stderr or "").lower()
+        if "syntax" in stderr or "damaged" in stderr or "corrupt" in stderr:
+            cause = "corrupt_pdf"
+        elif "permission" in stderr or "encrypted" in stderr:
+            cause = "pdf_permission_or_encryption"
+        else:
+            cause = "extractor_non_zero_exit"
+        return ExtractionResult(text="", status="error", reason="pdf_extract_failed", exit_cause=cause)
     except FileNotFoundError:
         logger.warning("pdftotext not found. Install poppler-utils for PDF support.")
+        return ExtractionResult(text="", status="error", reason="pdftotext_missing", exit_cause="missing_dependency")
+    except subprocess.TimeoutExpired:
+        return ExtractionResult(text="", status="error", reason="pdf_extract_timeout", exit_cause="timeout")
     except Exception as e:
         logger.warning(f"PDF extraction failed: {e}")
-    return ""
+        return ExtractionResult(text="", status="error", reason="pdf_extract_exception", exit_cause="exception")
 
 
 def _extract_html(filepath: Path) -> str:

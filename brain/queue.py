@@ -24,6 +24,7 @@ class WriteQueue:
 
     # Valid targets for queued writes
     TARGETS = {"supabase", "pocketbase", "chromadb"}
+    _TIMESTAMP_COLUMNS = ("created_at", "last_attempt_at", "completed_at")
 
     def __init__(self, db_path: Optional[Path] = None):
         self._db_path = str(db_path or Paths.QUEUE_DB)
@@ -78,7 +79,85 @@ class WriteQueue:
             """)
         except Exception:
             pass
+
+        # Normalize timestamp storage to UTC epoch seconds (INTEGER-compatible)
+        self._migrate_timestamps_to_epoch(conn)
         conn.commit()
+
+    @staticmethod
+    def _utc_epoch_seconds(value: datetime | int | float | str | None) -> Optional[int]:
+        """Normalize datetime-like value to UTC epoch seconds."""
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.astimezone(timezone.utc).timestamp())
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        # Already epoch-like
+        try:
+            return int(float(text))
+        except ValueError:
+            pass
+
+        # ISO-8601 text
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.astimezone(timezone.utc).timestamp())
+        except ValueError:
+            pass
+
+        # SQLite datetime text (UTC)
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+            try:
+                dt = datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+                return int(dt.timestamp())
+            except ValueError:
+                continue
+        return None
+
+    def _migrate_timestamps_to_epoch(self, conn: sqlite3.Connection):
+        """One-time migration: rewrite timestamp columns into UTC epoch seconds."""
+        rows = conn.execute(
+            """
+            SELECT id, created_at, last_attempt_at, completed_at
+            FROM pending_writes
+            """
+        ).fetchall()
+
+        for row in rows:
+            normalized = {
+                col: self._utc_epoch_seconds(row[col])
+                for col in self._TIMESTAMP_COLUMNS
+            }
+            # Only write rows where a value needs normalization.
+            if any(
+                row[col] is not None and str(row[col]) != str(normalized[col])
+                for col in self._TIMESTAMP_COLUMNS
+            ):
+                conn.execute(
+                    """
+                    UPDATE pending_writes
+                    SET created_at = ?, last_attempt_at = ?, completed_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        normalized["created_at"],
+                        normalized["last_attempt_at"],
+                        normalized["completed_at"],
+                        row["id"],
+                    ),
+                )
 
     def enqueue(self, target: str, payload: dict, operation: str = "upsert") -> int:
         """Add a write operation to the queue. Returns the queue item ID.
@@ -97,7 +176,7 @@ class WriteQueue:
             INSERT INTO pending_writes (target, operation, payload, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (target, operation, json.dumps(payload), datetime.now(timezone.utc).isoformat()),
+            (target, operation, json.dumps(payload), self._utc_epoch_seconds(datetime.now(timezone.utc))),
         )
         conn.commit()
         return cursor.lastrowid
@@ -111,7 +190,7 @@ class WriteQueue:
         Returns list of dicts with keys: id, target, operation, payload, created_at.
         """
         conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
+        now = self._utc_epoch_seconds(datetime.now(timezone.utc))
         rows = conn.execute(
             """
             SELECT id, target, operation, payload, created_at, attempts, last_attempt_at
@@ -131,9 +210,11 @@ class WriteQueue:
             # Exponential backoff check
             if row["attempts"] > 0 and row["last_attempt_at"]:
                 try:
-                    last = datetime.fromisoformat(row["last_attempt_at"])
                     backoff_seconds = min(row["attempts"] * 60, 3600)  # cap at 1 hour
-                    next_allowed = last.timestamp() + backoff_seconds
+                    last_epoch = self._utc_epoch_seconds(row["last_attempt_at"])
+                    if last_epoch is None:
+                        continue
+                    next_allowed = last_epoch + backoff_seconds
                     if datetime.now(timezone.utc).timestamp() < next_allowed:
                         continue  # skip — not ready for retry yet
                 except (ValueError, TypeError):
@@ -163,7 +244,7 @@ class WriteQueue:
         conn = self._get_conn()
         conn.execute(
             "UPDATE pending_writes SET status = 'done', completed_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), item_id),
+            (self._utc_epoch_seconds(datetime.now(timezone.utc)), item_id),
         )
         conn.commit()
 
@@ -255,9 +336,9 @@ class WriteQueue:
             """
             DELETE FROM pending_writes
             WHERE status = 'done'
-            AND completed_at < datetime('now', ? || ' hours')
+            AND CAST(completed_at AS INTEGER) < (CAST(strftime('%s', 'now') AS INTEGER) - (? * 3600))
             """,
-            (f"-{older_than_hours}",),
+            (older_than_hours,),
         )
         conn.commit()
 
