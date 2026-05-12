@@ -1,0 +1,15 @@
+# ── Core dependencies ─────────────────────────────────────
+faster-whisper          # STT — Whisper on CTranslate2, CPU int8
+chromadb                # Vector DB — local semantic search
+watchdog                # File watcher — inbox ingestion daemon
+requests                # HTTP — Ollama + PocketBase REST API
+gitpython               # Git — auto-commit after ingestion
+groq                    # Cloud AI — Llama 3.1 70B (free tier)
+google-generativeai     # Cloud AI — Gemini 2.0 Flash (free tier)
+supabase                # Cloud mirror — pgvector + storage
+python-dotenv           # Config — .env file loading
+pyyaml                  # Serialization — neuron YAML frontmatter
+
+# ── Dev dependencies ──────────────────────────────────────
+# pytest
+# pytest-asyncio

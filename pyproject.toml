@@ -1,0 +1,35 @@
+[project]
+name = "digital-brain"
+version = "0.1.0"
+description = "A hybrid, neuroscience-inspired Second Digital Brain. Local-first, cloud-mirrored, zero cost."
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    "faster-whisper",
+    "chromadb",
+    "watchdog",
+    "requests",
+    "gitpython",
+    "groq",
+    "google-generativeai",
+    "supabase",
+    "python-dotenv",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+brain = "brain.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+include = ["brain*"]
