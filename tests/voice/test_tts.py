@@ -29,8 +29,8 @@ def test_speak_output_file_uses_arg_list_and_stdin(monkeypatch):
         "--output_file",
         "/tmp/out.wav",
     ]
-    assert kwargs["input"] == cleaned_text
-    assert kwargs["text"] is True
+    assert kwargs["input"] == cleaned_text.encode("utf-8")
+    assert "text" not in kwargs
     assert "shell" not in kwargs
 
 
@@ -55,12 +55,12 @@ def test_speak_playback_uses_popen_pipe_and_stdin(monkeypatch):
     assert first_call.args[0] == ["/tmp/piper", "--model", "/tmp/model.onnx", "--output_raw"]
     assert first_call.kwargs["stdin"] == tts.subprocess.PIPE
     assert first_call.kwargs["stdout"] == tts.subprocess.PIPE
-    assert first_call.kwargs["text"] is True
+    assert "text" not in first_call.kwargs
 
     assert second_call.args[0] == ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q"]
     assert second_call.kwargs["stdin"] == piper_proc.stdout
 
-    piper_proc.communicate.assert_called_once_with(cleaned_text, timeout=60)
+    piper_proc.communicate.assert_called_once_with(cleaned_text.encode("utf-8"), timeout=60)
     aplay_proc.wait.assert_called_once_with(timeout=60)
 
 

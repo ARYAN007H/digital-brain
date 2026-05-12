@@ -51,8 +51,7 @@ def speak(text: str, output_file: Optional[str] = None):
                     "--output_file",
                     output_file,
                 ],
-                input=clean,
-                text=True,
+                input=clean.encode("utf-8"),
                 timeout=60,
                 check=False,
             )
@@ -62,7 +61,6 @@ def speak(text: str, output_file: Optional[str] = None):
                 [str(piper_bin), "--model", str(piper_model), "--output_raw"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                text=True,
             )
             aplay_proc = subprocess.Popen(
                 ["aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q"],
@@ -72,7 +70,7 @@ def speak(text: str, output_file: Optional[str] = None):
             if piper_proc.stdout is not None:
                 piper_proc.stdout.close()
 
-            piper_proc.communicate(clean, timeout=60)
+            piper_proc.communicate(clean.encode("utf-8"), timeout=60)
             aplay_proc.wait(timeout=60)
     except subprocess.TimeoutExpired:
         logger.warning("TTS playback timed out")
