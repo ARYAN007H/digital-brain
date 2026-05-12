@@ -16,6 +16,7 @@ dependencies = [
     "supabase",
     "python-dotenv",
     "pyyaml",
+    "rich",
 ]
 
 [project.optional-dependencies]
