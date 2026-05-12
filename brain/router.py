@@ -21,9 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import requests
 
-from brain.config import API, Brain, Hardware, Paths
+from brain.config import API, Brain, HTTP, Hardware, Paths
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +185,7 @@ class Router:
         self._groq_client = None
         self._gemini_model = None
         self._history = ConversationHistory()
+        logger.info("Router Ollama endpoint: %s", HTTP.sanitized_origin(API.OLLAMA_HOST, "Ollama"))
 
     # ── Mode Detection ───────────────────────────────────
 
@@ -239,10 +239,14 @@ class Router:
                 if system_prompt:
                     payload["system"] = system_prompt
 
-                r = requests.post(
+                headers = HTTP.build_headers(API.OLLAMA_AUTH_TOKEN)
+                r = HTTP.request(
+                    "POST",
                     f"{API.OLLAMA_HOST}/api/generate",
+                    service_name="Ollama",
                     json=payload,
                     timeout=120,
+                    headers=headers,
                 )
                 r.raise_for_status()
                 response = r.json().get("response", "")
@@ -259,10 +263,14 @@ class Router:
         """Generate embedding vector via Ollama. Unloads model after."""
         with self._lock:
             try:
-                r = requests.post(
+                headers = HTTP.build_headers(API.OLLAMA_AUTH_TOKEN)
+                r = HTTP.request(
+                    "POST",
                     f"{API.OLLAMA_HOST}/api/embeddings",
+                    service_name="Ollama",
                     json={"model": Hardware.OLLAMA_MODEL, "prompt": text},
                     timeout=60,
+                    headers=headers,
                 )
                 r.raise_for_status()
                 return r.json().get("embedding", [])
@@ -275,15 +283,19 @@ class Router:
     def _unload_ollama(self):
         """Explicitly unload Ollama model to free RAM."""
         try:
-            requests.post(
+            headers = HTTP.build_headers(API.OLLAMA_AUTH_TOKEN)
+            HTTP.request(
+                "POST",
                 f"{API.OLLAMA_HOST}/api/generate",
+                service_name="Ollama",
                 json={
                     "model": Hardware.OLLAMA_MODEL,
                     "keep_alive": 0,
                 },
                 timeout=10,
+                headers=headers,
             )
-            logger.debug("Ollama model unloaded")
+            logger.debug("Ollama model unloaded from %s", HTTP.sanitized_origin(API.OLLAMA_HOST, "Ollama"))
         except Exception:
             pass  # non-fatal
 
