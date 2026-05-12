@@ -24,6 +24,7 @@ from typing import Optional
 import requests
 
 from brain.config import API, Brain, Hardware, Paths
+from brain.security import redact_pii
 
 logger = logging.getLogger(__name__)
 
@@ -233,8 +234,9 @@ class Router:
             try:
                 payload = {
                     "model": Hardware.OLLAMA_MODEL,
-                    "prompt": prompt,
+                    "prompt": prompt[:12000],
                     "stream": False,
+                    "options": {"num_ctx": 4096},
                 }
                 if system_prompt:
                     payload["system"] = system_prompt
@@ -368,7 +370,12 @@ class Router:
                     response = self.ask_local(full_prompt, system_prompt)
 
         # Record exchange in history
-        self._history.add_exchange(clean_query, response, mode=mode, provider=provider)
+        self._history.add_exchange(
+            redact_pii(clean_query),
+            redact_pii(response),
+            mode=mode,
+            provider=provider,
+        )
 
         return {
             "mode": mode,
