@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from brain.config import Brain
+from brain.config import Brain, Paths
 from brain.dedup import DedupEngine
 from brain.ingestion.parser import chunk_content, detect_source, extract_text
 from brain.models import AtomicNeuron, MemoryNeuron
@@ -80,6 +81,10 @@ Text: {text}"""
 class Processor:
     """LLM-powered ingestion processor."""
 
+    MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
+    MAX_TEXT_CHARS = 500_000
+    MAX_CHUNKS = 500
+
     def __init__(
         self,
         router: Optional[Router] = None,
@@ -99,6 +104,35 @@ class Processor:
         self.git = git or GitSync()
         self.dedup = dedup or DedupEngine()
         self.wikilinks = wikilinks or WikilinkScanner(vault=self.vault, synapses=self.synapses)
+        self._metrics_file = Paths.META / "ingestion-health.json"
+
+    def _load_metrics(self) -> dict:
+        if self._metrics_file.exists():
+            try:
+                return json.loads(self._metrics_file.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass
+        return {"rejected": 0, "quarantined": 0, "reasons": {}}
+
+    def _save_metrics(self, metrics: dict):
+        self.vault.write_meta("ingestion-health.json", json.dumps(metrics, indent=2))
+
+    def _inc_metric(self, bucket: str, reason: str):
+        metrics = self._load_metrics()
+        metrics[bucket] = metrics.get(bucket, 0) + 1
+        reasons = metrics.setdefault("reasons", {})
+        reasons[reason] = reasons.get(reason, 0) + 1
+        self._save_metrics(metrics)
+
+    def _quarantine(self, filepath: Path, reason: str):
+        quarantine_dir = Paths.RAW_LOGS / "quarantine"
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        target = quarantine_dir / filepath.name
+        shutil.move(str(filepath), str(target))
+        logger.warning(
+            "File quarantined",
+            extra={"event": "file_quarantined", "file": str(filepath), "target": str(target), "reason": reason},
+        )
 
     def process_file(self, filepath: Path, force: bool = False) -> dict:
         """Full ingestion pipeline for a single file.
@@ -111,19 +145,50 @@ class Processor:
         """
         logger.info(f"Processing: {filepath.name}")
 
+        size_bytes = filepath.stat().st_size
+        if size_bytes > self.MAX_FILE_SIZE_BYTES:
+            self._inc_metric("rejected", "max_file_size_exceeded")
+            self._quarantine(filepath, "max_file_size_exceeded")
+            return {"status": "rejected", "reason": "max_file_size_exceeded", "size_bytes": size_bytes}
+
         # Deduplication check
         is_new, content_hash = self.dedup.check_and_record(filepath, force=force)
         if not is_new:
             return {"status": "skipped", "reason": "duplicate"}
 
         source = detect_source(filepath)
-        text = extract_text(filepath)
+        extraction = extract_text(filepath)
+        if extraction.status != "ok":
+            reason = extraction.reason or "extract_failed"
+            self._inc_metric("quarantined", reason)
+            self._quarantine(filepath, reason)
+            logger.warning(
+                "Extraction failed",
+                extra={
+                    "event": "extract_failure",
+                    "file": str(filepath),
+                    "status": extraction.status,
+                    "reason": reason,
+                    "exit_cause": extraction.exit_cause,
+                },
+            )
+            return {"status": "quarantined", "reason": reason, "exit_cause": extraction.exit_cause}
+
+        text = extraction.text
+        if len(text) > self.MAX_TEXT_CHARS:
+            self._inc_metric("rejected", "max_text_chars_exceeded")
+            self._quarantine(filepath, "max_text_chars_exceeded")
+            return {"status": "rejected", "reason": "max_text_chars_exceeded", "text_chars": len(text)}
 
         if not text.strip():
             logger.warning(f"Empty file, skipping: {filepath}")
             return {"status": "skipped", "reason": "empty"}
 
         chunks = chunk_content(text)
+        if len(chunks) > self.MAX_CHUNKS:
+            self._inc_metric("rejected", "max_chunks_exceeded")
+            self._quarantine(filepath, "max_chunks_exceeded")
+            return {"status": "rejected", "reason": "max_chunks_exceeded", "chunks": len(chunks)}
         all_atomic: list[AtomicNeuron] = []
         all_tasks: list[dict] = []
 
