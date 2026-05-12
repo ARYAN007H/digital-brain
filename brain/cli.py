@@ -16,6 +16,9 @@ Usage:
     brain ide [--ingest-existing]
     brain setup-pb
     brain scan-links
+
+Conversation history defaults:
+    Enabled, with 30-day retention in data/brain.db.
 """
 
 from __future__ import annotations
@@ -373,7 +376,7 @@ def cmd_adapt(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="🧠 Digital Brain CLI",
+        description="🧠 Digital Brain CLI (history defaults: enabled, 30-day retention)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-v", "--verbose", action="store_true")
