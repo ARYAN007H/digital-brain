@@ -78,3 +78,24 @@ def test_speak_empty_cleaned_text_does_not_invoke_subprocess(monkeypatch):
 
     run_mock.assert_not_called()
     popen_mock.assert_not_called()
+
+
+def test_speak_playback_timeout_terminates_processes(monkeypatch):
+    monkeypatch.setattr(tts, "Paths", DummyPaths)
+    monkeypatch.setattr(Path, "exists", lambda self: True)
+
+    piper_proc = MagicMock()
+    piper_proc.stdout = MagicMock()
+    piper_proc.communicate.side_effect = tts.subprocess.TimeoutExpired(cmd="piper", timeout=60)
+    piper_proc.poll.return_value = None
+
+    aplay_proc = MagicMock()
+    aplay_proc.poll.return_value = None
+
+    popen_mock = MagicMock(side_effect=[piper_proc, aplay_proc])
+    monkeypatch.setattr(tts.subprocess, "Popen", popen_mock)
+
+    tts.speak("timeout please")
+
+    piper_proc.terminate.assert_called_once()
+    aplay_proc.terminate.assert_called_once()

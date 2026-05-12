@@ -15,6 +15,7 @@ from typing import Optional
 from brain.config import Paths
 
 logger = logging.getLogger(__name__)
+_TTS_TIMEOUT_SECONDS = 60
 
 
 def speak(text: str, output_file: Optional[str] = None):
@@ -52,7 +53,7 @@ def speak(text: str, output_file: Optional[str] = None):
                     output_file,
                 ],
                 input=clean.encode("utf-8"),
-                timeout=60,
+                timeout=_TTS_TIMEOUT_SECONDS,
                 check=False,
             )
         else:
@@ -70,9 +71,11 @@ def speak(text: str, output_file: Optional[str] = None):
             if piper_proc.stdout is not None:
                 piper_proc.stdout.close()
 
-            piper_proc.communicate(clean.encode("utf-8"), timeout=60)
-            aplay_proc.wait(timeout=60)
+            piper_proc.communicate(clean.encode("utf-8"), timeout=_TTS_TIMEOUT_SECONDS)
+            aplay_proc.wait(timeout=_TTS_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        _terminate_process(piper_proc if "piper_proc" in locals() else None)
+        _terminate_process(aplay_proc if "aplay_proc" in locals() else None)
         logger.warning("TTS playback timed out")
     except Exception as e:
         logger.error(f"TTS failed: {e}")
@@ -90,3 +93,15 @@ def _clean_for_speech(text: str) -> str:
     clean = re.sub(r"^\s*[-*]\s+", "", clean, flags=re.MULTILINE)  # bullets
     clean = re.sub(r"\n{3,}", "\n\n", clean)           # excess newlines
     return clean.strip()
+
+
+def _terminate_process(proc: Optional[subprocess.Popen]) -> None:
+    """Best-effort process teardown for timeout/error handling."""
+    if proc is None:
+        return
+
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+    except Exception:
+        return
