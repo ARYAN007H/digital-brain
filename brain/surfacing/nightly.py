@@ -10,6 +10,7 @@ Nightly cron (2am) generates:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timedelta
 
@@ -64,6 +65,13 @@ class Surfacer:
         queue_counts = self.queue.total_count()
         vector_counts = self.vectors.count()
         inbox_count = self.vault.inbox_count()
+        ingestion_metrics = {"rejected": 0, "quarantined": 0, "reasons": {}}
+        metrics_path = self.vault.root / "_meta" / "ingestion-health.json"
+        if metrics_path.exists():
+            try:
+                ingestion_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                logger.warning("Invalid ingestion-health.json format")
 
         strongest = ""
         avg_strength = 0
@@ -115,6 +123,11 @@ Sync status:
 └── Completed:          {queue_counts.get('done', 0)}
 
 Inbox pending:          {inbox_count}
+
+Ingestion safety:
+├── Rejected files:     {ingestion_metrics.get('rejected', 0)}
+└── Quarantined files:  {ingestion_metrics.get('quarantined', 0)}
+
 Last updated:           {datetime.now().isoformat()}
 ```
 """
