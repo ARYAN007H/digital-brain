@@ -336,6 +336,33 @@ class Router:
 
     # ── Cloud LLMs ───────────────────────────────────────
 
+    def ask_xai(self, prompt: str, system_prompt: str = "") -> str:
+        """Query xAI API (Grok). Free tier fallback."""
+        if not API.has_xai():
+            raise RuntimeError("xAI API key not configured")
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        headers = {
+            "Authorization": f"Bearer {API.XAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": Hardware.XAI_MODEL,
+            "messages": messages
+        }
+
+        try:
+            import requests
+            r = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload, timeout=60)
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise RuntimeError(f"xAI API error: {e}")
+
     def ask_groq(self, prompt: str, system_prompt: str = "") -> str:
         """Query Groq API (Llama 3.1 70B). Free tier."""
         if not API.has_groq():
@@ -402,10 +429,10 @@ class Router:
             response = self.ask_local(full_prompt, system_prompt)
         elif mode in Brain.CLOUD_MODES:
             try:
-                provider = "groq"
-                response = self.ask_groq(full_prompt, system_prompt)
+                provider = "xai"
+                response = self.ask_xai(full_prompt, system_prompt)
             except Exception as e:
-                logger.warning(f"Groq failed ({e}), trying Gemini")
+                logger.warning(f"xAI failed ({e}), trying Gemini")
                 try:
                     provider = "gemini"
                     response = self.ask_gemini(full_prompt)

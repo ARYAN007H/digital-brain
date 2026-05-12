@@ -99,6 +99,7 @@ class API:
     # Cloud AI (free tier, no card)
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    XAI_API_KEY = os.getenv("XAI_API_KEY", "")
 
     # Supabase (optional cloud mirror)
     SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -120,6 +121,10 @@ class API:
     @classmethod
     def has_gemini(cls) -> bool:
         return bool(cls.GEMINI_API_KEY and cls.GEMINI_API_KEY != "your_gemini_api_key_here")
+
+    @classmethod
+    def has_xai(cls) -> bool:
+        return bool(cls.XAI_API_KEY and cls.XAI_API_KEY != "your_xai_api_key_here")
 
     @classmethod
     def has_supabase(cls) -> bool:
@@ -150,6 +155,9 @@ class Hardware:
 
     # Gemini model
     GEMINI_MODEL = "gemini-2.0-flash"
+
+    # xAI model
+    XAI_MODEL = "grok-beta"
 
 
 class Brain:
