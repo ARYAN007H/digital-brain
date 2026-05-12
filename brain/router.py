@@ -11,6 +11,7 @@ Includes RAM safety: file-based lock prevents concurrent Ollama use.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from typing import Optional
 
 
 from brain.config import API, Brain, HTTP, Hardware, Paths
+from brain.security import redact_pii
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,10 @@ class ConversationHistory:
         self._idle_timeout = idle_timeout_min
         self._local = threading.local()
         self._session_id: Optional[str] = None
+        self._history_enabled = Brain.HISTORY_ENABLED
+        self._retention_days = Brain.HISTORY_RETENTION_DAYS
+        self._max_content_chars = Brain.HISTORY_MAX_CONTENT_CHARS
+        self._privacy_mode = Brain.history_privacy_mode()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -127,25 +133,53 @@ class ConversationHistory:
         self._session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return self._session_id
 
+    def _truncate_content(self, text: str) -> str:
+        return (text or "")[:self._max_content_chars]
+
+    def _privacy_transform(self, text: str) -> str:
+        if self._privacy_mode == "hash":
+            return hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if self._privacy_mode == "redact":
+            return "[REDACTED]"
+        return text
+
+    def _purge_expired(self):
+        conn = self._get_conn()
+        conn.execute(
+            """DELETE FROM conversation_history
+               WHERE datetime(created_at) < datetime('now', ?)""",
+            (f"-{self._retention_days} days",),
+        )
+
     def add_exchange(self, query: str, response: str, mode: str = "", provider: str = ""):
         """Record a query-response exchange."""
+        if not self._history_enabled:
+            return
+
         session = self._get_or_create_session()
         conn = self._get_conn()
         now = datetime.now(timezone.utc).isoformat()
+        user_content = self._privacy_transform(self._truncate_content(query))
+        assistant_content = self._privacy_transform(self._truncate_content(response))
+
+        self._purge_expired()
         conn.execute(
             """INSERT INTO conversation_history (session_id, role, content, mode, provider, created_at)
                VALUES (?, 'user', ?, ?, ?, ?)""",
-            (session, query, mode, provider, now),
+            (session, user_content, mode, provider, now),
         )
         conn.execute(
             """INSERT INTO conversation_history (session_id, role, content, mode, provider, created_at)
                VALUES (?, 'assistant', ?, ?, ?, ?)""",
-            (session, response[:1000], mode, provider, now),
+            (session, assistant_content, mode, provider, now),
         )
         conn.commit()
 
     def get_context(self) -> str:
         """Get recent conversation context as a formatted string."""
+        if not self._history_enabled:
+            return ""
+
         session = self._get_or_create_session()
         conn = self._get_conn()
         rows = conn.execute(
@@ -233,8 +267,9 @@ class Router:
             try:
                 payload = {
                     "model": Hardware.OLLAMA_MODEL,
-                    "prompt": prompt,
+                    "prompt": prompt[:12000],
                     "stream": False,
+                    "options": {"num_ctx": 4096},
                 }
                 if system_prompt:
                     payload["system"] = system_prompt
@@ -380,7 +415,12 @@ class Router:
                     response = self.ask_local(full_prompt, system_prompt)
 
         # Record exchange in history
-        self._history.add_exchange(clean_query, response, mode=mode, provider=provider)
+        self._history.add_exchange(
+            redact_pii(clean_query),
+            redact_pii(response),
+            mode=mode,
+            provider=provider,
+        )
 
         return {
             "mode": mode,

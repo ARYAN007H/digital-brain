@@ -17,6 +17,21 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 class Paths:
     """All filesystem paths used by the brain."""
 
@@ -165,6 +180,18 @@ class Brain:
 
     # Sync interval (seconds)
     SYNC_INTERVAL = 300  # 5 minutes
+
+    # Conversation history privacy controls
+    HISTORY_ENABLED = _env_bool("HISTORY_ENABLED", True)
+    HISTORY_RETENTION_DAYS = max(1, _env_int("HISTORY_RETENTION_DAYS", 30))
+    HISTORY_MAX_CONTENT_CHARS = max(100, _env_int("HISTORY_MAX_CONTENT_CHARS", 1000))
+    # plain | hash | redact
+    HISTORY_PRIVACY_MODE = os.getenv("HISTORY_PRIVACY_MODE", "plain").strip().lower()
+
+    @classmethod
+    def history_privacy_mode(cls) -> str:
+        mode = cls.HISTORY_PRIVACY_MODE
+        return mode if mode in {"plain", "hash", "redact"} else "plain"
 
     # Surfacing schedule
     NIGHTLY_HOUR = 2  # 2am

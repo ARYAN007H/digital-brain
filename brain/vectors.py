@@ -8,6 +8,7 @@ Embeddings generated externally (by Ollama) and stored here.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -110,6 +111,44 @@ class VectorStore:
         # Sort by distance (lower = more similar) and return top_k
         results.sort(key=lambda x: x["distance"])
         return results[:top_k]
+
+
+    @staticmethod
+    def _lexical_score(query: str, document: str) -> float:
+        """Simple lexical overlap score in [0,1]."""
+        q_tokens = {t for t in re.findall(r"[a-zA-Z0-9_]+", query.lower()) if len(t) > 2}
+        if not q_tokens:
+            return 0.0
+        d_tokens = set(re.findall(r"[a-zA-Z0-9_]+", (document or "").lower()))
+        overlap = len(q_tokens & d_tokens)
+        return overlap / len(q_tokens)
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: list[float],
+        region: Optional[str] = None,
+        top_k: int = 5,
+        lexical_weight: float = 0.35,
+    ) -> list[dict]:
+        """Hybrid retrieval: semantic similarity + lexical overlap rerank."""
+        # pull broader semantic candidates first
+        semantic_k = max(top_k * 4, 12)
+        candidates = self.search(query_embedding, region=region, top_k=semantic_k)
+
+        reranked = []
+        for c in candidates:
+            semantic_sim = max(0.0, 1.0 - float(c.get("distance", 1.0)))
+            lexical_sim = self._lexical_score(query_text, c.get("document", ""))
+            score = (1 - lexical_weight) * semantic_sim + lexical_weight * lexical_sim
+            item = dict(c)
+            item["semantic_similarity"] = round(semantic_sim, 4)
+            item["lexical_similarity"] = round(lexical_sim, 4)
+            item["hybrid_score"] = round(score, 4)
+            reranked.append(item)
+
+        reranked.sort(key=lambda x: x["hybrid_score"], reverse=True)
+        return reranked[:top_k]
 
     def get_similar(
         self,

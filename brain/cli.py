@@ -16,6 +16,9 @@ Usage:
     brain ide [--ingest-existing]
     brain setup-pb
     brain scan-links
+
+Conversation history defaults:
+    Enabled, with 30-day retention in data/brain.db.
 """
 
 from __future__ import annotations
@@ -333,9 +336,47 @@ def cmd_scan_links(args):
     scan_main()
 
 
+
+def cmd_doctor(args):
+    """Run startup/config diagnostics."""
+    from brain.security import run_startup_checks
+
+    checks = run_startup_checks()
+    has_fail = False
+    for c in checks:
+        mark = "✅" if c.ok else "❌"
+        print(f"{mark} {c.name}: {c.detail}")
+        if not c.ok and c.name not in {"groq_key", "gemini_key", "supabase"}:
+            has_fail = True
+
+    if has_fail:
+        print("\nSome required checks failed. See START_GUIDE.md")
+
+
+
+def cmd_ui(args):
+    """Launch Streamlit web UI."""
+    import subprocess
+    subprocess.run(["streamlit", "run", "brain/webapp.py"], check=False)
+
+
+
+def cmd_adapt(args):
+    """Run adaptive plasticity updates."""
+    from brain.plasticity import PlasticityEngine
+
+    engine = PlasticityEngine()
+    if getattr(args, "once", False):
+        out = engine.reinforce_from_recent_activity(hours=args.hours, dry_run=args.dry_run)
+        print(out)
+        return
+
+    engine.run_forever(interval_sec=args.interval)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="🧠 Digital Brain CLI",
+        description="🧠 Digital Brain CLI (history defaults: enabled, 30-day retention)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -382,6 +423,10 @@ def main():
                             help="Live TUI dashboard")
     p_dash.set_defaults(func=cmd_dashboard)
 
+    # web ui
+    p_ui = sub.add_parser("ui", help="Launch Streamlit web UI")
+    p_ui.set_defaults(func=cmd_ui)
+
     # ide
     p_ide = sub.add_parser("ide", help="IDE conversation ingestion")
     p_ide.add_argument("--ingest-existing", action="store_true",
@@ -396,6 +441,18 @@ def main():
     # scan-links
     p_links = sub.add_parser("scan-links", help="Scan wikilinks, reinforce synapses")
     p_links.set_defaults(func=cmd_scan_links)
+
+    # doctor
+    p_doctor = sub.add_parser("doctor", help="Run startup diagnostics")
+    p_doctor.set_defaults(func=cmd_doctor)
+
+    # adapt
+    p_adapt = sub.add_parser("adapt", help="Run plasticity adaptation loop")
+    p_adapt.add_argument("--once", action="store_true", help="Run one adaptation pass")
+    p_adapt.add_argument("--hours", type=int, default=24, help="History window in hours")
+    p_adapt.add_argument("--interval", type=int, default=300, help="Loop interval seconds")
+    p_adapt.add_argument("--dry-run", action="store_true", help="Compute reinforcement plan without writing")
+    p_adapt.set_defaults(func=cmd_adapt)
 
     args = parser.parse_args()
     setup_logging(getattr(args, "verbose", False))
