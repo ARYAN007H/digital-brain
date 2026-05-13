@@ -106,6 +106,20 @@ class Processor:
         self.wikilinks = wikilinks or WikilinkScanner(vault=self.vault, synapses=self.synapses)
         self._metrics_file = Paths.META / "ingestion-health.json"
 
+        # Neural subsystems (lazy init)
+        self._emotional_gate = None
+        self._associative = None
+        self._bus = None
+        try:
+            from brain.eventbus import EventBus
+            from brain.emotional_gate import EmotionalGate
+            from brain.associative import AssociativeRecallEngine
+            self._bus = EventBus.get()
+            self._emotional_gate = EmotionalGate()
+            self._associative = AssociativeRecallEngine(vault=self.vault)
+        except Exception:
+            pass
+
     def _load_metrics(self) -> dict:
         if self._metrics_file.exists():
             try:
@@ -283,6 +297,19 @@ class Processor:
                 self.vault.write_neuron(neuron)
                 atoms.append(neuron)
 
+                # Index for associative recall
+                if self._associative:
+                    self._associative.index_neuron(
+                        neuron.id, neuron.title, neuron.body, neuron.region,
+                        neuron.tags,
+                    )
+                # Emit neuron.created event
+                if self._bus:
+                    self._bus.emit("neuron.created", {
+                        "neuron_id": neuron.id, "region": region,
+                        "title": neuron.title, "source": source,
+                    })
+
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"Failed to parse atomic ideas: {e}")
             # Fallback: create one neuron from the whole chunk
@@ -402,18 +429,30 @@ class Processor:
                 neuron.chroma_id = chroma_id
 
     def _suggest_synapses(self, atoms: list[AtomicNeuron]):
-        """Find and create synapse candidates between new neurons."""
+        """Find and create synapse candidates between new neurons.
+
+        Applies emotional encoding boost for charged/urgent content.
+        """
         for neuron in atoms:
             if neuron.region == "amygdala":
                 continue
 
             similar = self.vectors.get_similar(neuron.id, neuron.region)
             for match in similar:
+                base_score = Brain.SYNAPSE_SEMANTIC_SIM
+
+                # Emotional encoding boost
+                if self._emotional_gate:
+                    mult = self._emotional_gate.encoding_multiplier(
+                        neuron.emotional_weight, neuron.urgency,
+                    )
+                    base_score = max(1, int(round(base_score * mult)))
+
                 self.synapses.reinforce(
                     neuron.id,
                     match["id"],
                     "semantic-sim",
-                    Brain.SYNAPSE_SEMANTIC_SIM,
+                    base_score,
                 )
 
     def _queue_sync(self, atoms, memory, task_neurons):

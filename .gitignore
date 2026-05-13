@@ -31,3 +31,6 @@ Thumbs.db
 
 # ── Brain lock file ──────────────────────────────────────
 .brain_lock
+
+# ── Personal Brain Vault (Personal Data) ──────────────────
+vault/

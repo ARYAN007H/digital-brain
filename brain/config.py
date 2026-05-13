@@ -173,6 +173,25 @@ class Brain:
     # Semantic similarity threshold
     SIMILARITY_THRESHOLD = 0.85
 
+    # ── Synaptic decay (LTD) ─────────────────────────────
+    DECAY_LAMBDA = 0.02             # default decay rate (half-life ~35 days)
+    DECAY_LAMBDA_AMYGDALA = 0.01    # emotional memories decay 2x slower
+    DECAY_MIN_STRENGTH = 1          # prune below this
+
+    # ── STDP ─────────────────────────────────────────────
+    STDP_TAU_SECONDS = 300.0        # time constant for exponential window
+    STDP_WINDOW_SECONDS = 600       # max interval to consider (10 min)
+    STDP_LTP_MAX = 5                # max potentiation per pair
+    STDP_LTD_MAX = -2               # max depression per pair
+
+    # ── Working memory ───────────────────────────────────
+    WORKING_MEMORY_SIZE = 7         # Miller's 7±2
+    WORKING_MEMORY_FOCUS_DECAY = 600  # seconds before topic focus expires
+
+    # ── Neurogenesis ─────────────────────────────────────
+    NEUROGENESIS_MAX_PER_NIGHT = 3  # rate-limit autonomous neuron creation
+    NEUROGENESIS_MIN_CLUSTER = 3    # minimum cluster size to trigger
+
     # ChromaDB collection names (one per region, amygdala is metadata-only)
     CHROMA_COLLECTIONS = {
         "prefrontal": "prefrontal_neurons",

@@ -1,4 +1,8 @@
-"""Online plasticity engine: reinforce connections from recent usage signals."""
+"""Online plasticity engine: reinforce connections from recent usage signals.
+
+Delegates to STDPEngine for temporally-precise reinforcement when access
+event data is available.  Falls back to co-mention scanning for bulk data.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +29,12 @@ class PlasticityEngine:
     def __init__(self):
         self._db = Paths.BRAIN_DB
         self._syn = SynapseManager()
+        self._stdp = None
+        try:
+            from brain.stdp import STDPEngine
+            self._stdp = STDPEngine(synapses=self._syn)
+        except Exception:
+            pass
 
     def _recent_text(self, hours: int = 24) -> list[str]:
         if not self._db.exists():
@@ -44,10 +54,24 @@ class PlasticityEngine:
             conn.close()
 
     def reinforce_from_recent_activity(self, hours: int = 24, dry_run: bool = False) -> dict:
-        """Reinforce synapses from co-mentioned neuron ids in recent conversations.
+        """Reinforce synapses from recent activity.
 
-        Uses time-aware weighting: recent traces contribute larger reinforcement.
+        Uses STDP (spike-timing dependent plasticity) when access event
+        data is available, falls back to co-mention scanning otherwise.
         """
+        result = {"stdp": None, "co_mention": None, "dry_run": dry_run}
+
+        # Primary path: STDP from timestamped access events
+        if self._stdp:
+            try:
+                stdp_result = self._stdp.run_stdp_pass(hours=hours, dry_run=dry_run)
+                result["stdp"] = stdp_result
+                if stdp_result.get("pairs_evaluated", 0) > 0:
+                    logger.info("STDP pass: %s", stdp_result)
+            except Exception as e:
+                logger.warning("STDP pass failed, falling back to co-mention: %s", e)
+
+        # Fallback: co-mention scanning (always runs for bulk-ingested data)
         texts = self._recent_text(hours=hours)
         pair_scores: dict[tuple[str, str], float] = defaultdict(float)
 
@@ -55,7 +79,6 @@ class PlasticityEngine:
             ids = sorted(set(ID_PATTERN.findall(t or "")))
             if len(ids) < 2:
                 continue
-            # recent items in the list get slightly larger weight
             recency_weight = 1.0 + max(0.0, (len(texts) - idx) / max(1, len(texts)))
             for a, b in combinations(ids, 2):
                 pair_scores[(a, b)] += recency_weight
@@ -69,13 +92,13 @@ class PlasticityEngine:
                 self._syn.reinforce(a, b, event="co-access", score=score)
             reinforced += 1
 
-        logger.info("Plasticity pass complete: %s pairs reinforced", reinforced)
-        return {
+        result["co_mention"] = {
             "pairs_reinforced": reinforced,
             "source_texts": len(texts),
             "total_reinforcement": total_score,
-            "dry_run": dry_run,
         }
+        logger.info("Plasticity pass complete: %s", result)
+        return result
 
     def run_forever(self, interval_sec: int = 300):
         """Continuous low-cost plasticity updates."""

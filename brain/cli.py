@@ -336,7 +336,6 @@ def cmd_scan_links(args):
     scan_main()
 
 
-
 def cmd_doctor(args):
     """Run startup/config diagnostics."""
     from brain.security import run_startup_checks
@@ -357,7 +356,13 @@ def cmd_doctor(args):
 def cmd_ui(args):
     """Launch Streamlit web UI."""
     import subprocess
-    subprocess.run(["streamlit", "run", "brain/webapp.py"], check=False)
+    import sys
+    # Pre-import concurrent.futures.thread to resolve Python 3.14 lazy loading compatibility issues with Streamlit
+    cmd = [
+        sys.executable, "-c",
+        "import concurrent.futures.thread; import sys; from streamlit.web.cli import main; sys.argv=['streamlit', 'run', 'brain/webapp.py']; sys.exit(main())"
+    ]
+    subprocess.run(cmd, check=False)
 
 
 
@@ -372,6 +377,178 @@ def cmd_adapt(args):
         return
 
     engine.run_forever(interval_sec=args.interval)
+
+
+def cmd_decay(args):
+    """Run synaptic decay pass."""
+    from brain.decay import DecayEngine
+
+    console = _get_console()
+    engine = DecayEngine()
+
+    if getattr(args, "preview", False):
+        result = engine.preview_decay()
+        label = "Decay preview (dry run)"
+    else:
+        result = engine.apply_decay()
+        label = "Decay applied"
+
+    if console:
+        from rich.panel import Panel
+        console.print(Panel(
+            f"Total synapses: {result['total_synapses']}\n"
+            f"Decayed: [yellow]{result['decayed']}[/]\n"
+            f"Pruned: [red]{result['pruned']}[/]\n"
+            f"Dry run: {result.get('dry_run', False)}",
+            title=f"🧹 {label}",
+            border_style="yellow",
+        ))
+    else:
+        print(f"{label}: {result}")
+
+
+def cmd_consolidate(args):
+    """Run memory consolidation pass."""
+    from brain.consolidation import ConsolidationEngine
+
+    console = _get_console()
+    engine = ConsolidationEngine()
+    result = engine.run_consolidation()
+
+    if console:
+        from rich.panel import Panel
+        console.print(Panel(
+            f"Replay connections: [green]{result['replay']}[/]\n"
+            f"Bridge connections: [cyan]{result['bridges']}[/]\n"
+            f"Promotion suggestions: [yellow]{len(result['promotions'])}[/]",
+            title="🌙 Consolidation",
+            border_style="blue",
+        ))
+    else:
+        print(f"Consolidation: {result}")
+
+
+def cmd_neurogenesis(args):
+    """Run neurogenesis — generate insight neurons."""
+    from brain.neurogenesis import NeurogenesisEngine
+
+    console = _get_console()
+    engine = NeurogenesisEngine()
+    result = engine.run_neurogenesis()
+
+    if console:
+        from rich.panel import Panel
+        console.print(Panel(
+            f"Clusters found: {result['clusters_found']}\n"
+            f"Neurons generated: [bold green]{result['neurons_generated']}[/]",
+            title="🧬 Neurogenesis",
+            border_style="green",
+        ))
+        for n in result.get("neurons", []):
+            console.print(f"  ✨ [[{n['id']}]] {n['title']}")
+    else:
+        print(f"Neurogenesis: {result}")
+
+
+def cmd_neural_status(args):
+    """Show status of all neural subsystems."""
+    console = _get_console()
+
+    sections = []
+
+    # Event bus
+    try:
+        from brain.eventbus import EventBus
+        bus = EventBus.get()
+        total = bus.event_count()
+        sections.append(("⚡ Event Bus", f"Total events logged: {total}"))
+    except Exception as e:
+        sections.append(("⚡ Event Bus", f"Error: {e}"))
+
+    # STDP
+    try:
+        from brain.stdp import STDPEngine
+        stdp = STDPEngine()
+        count = stdp.access_count()
+        sections.append(("🔬 STDP", f"Access events recorded: {count}"))
+    except Exception as e:
+        sections.append(("🔬 STDP", f"Error: {e}"))
+
+    # Working memory
+    try:
+        from brain.working_memory import WorkingMemoryBuffer
+        wm = WorkingMemoryBuffer()
+        size = wm.size()
+        focus = wm.get_focus_topic() or "none"
+        sections.append(("🧠 Working Memory", f"Buffer size: {size}/7 | Focus: {focus}"))
+    except Exception as e:
+        sections.append(("🧠 Working Memory", f"Error: {e}"))
+
+    # Decay
+    try:
+        from brain.decay import DecayEngine
+        decay = DecayEngine()
+        stats = decay.recent_decay_stats(1)
+        if stats:
+            last = stats[0]
+            sections.append(("🧹 Decay", f"Last run: {last['run_at'][:16]} | Decayed: {last['decayed']} | Pruned: {last['pruned']}"))
+        else:
+            sections.append(("🧹 Decay", "No decay runs yet"))
+    except Exception as e:
+        sections.append(("🧹 Decay", f"Error: {e}"))
+
+    # Associative
+    try:
+        from brain.associative import AssociativeRecallEngine
+        assoc = AssociativeRecallEngine()
+        idx = assoc.index_stats()
+        sections.append(("🔗 Associative Index", f"Tags: {idx['unique_tags']} | Neurons: {idx['tagged_neurons']} | FTS: {idx['fts_indexed']}"))
+    except Exception as e:
+        sections.append(("🔗 Associative Index", f"Error: {e}"))
+
+    if console:
+        from rich.panel import Panel
+        from rich.table import Table
+        table = Table(show_header=True, header_style="bold cyan", expand=True)
+        table.add_column("Subsystem", style="white")
+        table.add_column("Status", style="green")
+        for name, status in sections:
+            table.add_row(name, status)
+        console.print(Panel(table, title="🧠 Neural Subsystem Status", border_style="magenta"))
+    else:
+        for name, status in sections:
+            print(f"{name}: {status}")
+
+
+def cmd_wm(args):
+    """Working memory operations."""
+    from brain.working_memory import WorkingMemoryBuffer
+
+    console = _get_console()
+    wm = WorkingMemoryBuffer()
+
+    if getattr(args, "flush", False):
+        wm.flush()
+        print("Working memory flushed.")
+        return
+
+    items = wm.get_active_set()
+    if console:
+        from rich.table import Table
+        table = Table(title="🧠 Working Memory Buffer", show_header=True, header_style="bold cyan")
+        table.add_column("Neuron", style="white")
+        table.add_column("Region", style="blue")
+        table.add_column("Freq", justify="right", style="yellow")
+        table.add_column("Relevance", justify="right", style="green")
+        for item in items:
+            table.add_row(item["neuron_id"], item["region"], str(item["frequency"]), f"{item['relevance']:.3f}")
+        console.print(table)
+        focus = wm.get_focus_topic()
+        if focus:
+            console.print(f"\n[dim]Focus topic:[/] {focus}")
+    else:
+        for item in items:
+            print(f"  {item['neuron_id']} ({item['region']}) freq={item['frequency']} rel={item['relevance']:.3f}")
 
 
 def main():
@@ -411,7 +588,7 @@ def main():
     p_stats.set_defaults(func=cmd_stats)
 
     # surface
-    p_surface = sub.add_parser("surface", help="Run proactive surfacing")
+    p_surface = sub.add_parser("surface", help="Run nightly brain maintenance")
     p_surface.set_defaults(func=cmd_surface)
 
     # voice
@@ -430,7 +607,7 @@ def main():
     # ide
     p_ide = sub.add_parser("ide", help="IDE conversation ingestion")
     p_ide.add_argument("--ingest-existing", action="store_true",
-                       help="Ingest recent existing conversations")
+                        help="Ingest recent existing conversations")
     p_ide.add_argument("--days", type=int, default=7)
     p_ide.set_defaults(func=cmd_ide)
 
@@ -454,6 +631,30 @@ def main():
     p_adapt.add_argument("--dry-run", action="store_true", help="Compute reinforcement plan without writing")
     p_adapt.set_defaults(func=cmd_adapt)
 
+    # ── New neural subsystem commands ────────────────────
+
+    # decay
+    p_decay = sub.add_parser("decay", help="Synaptic decay (LTD + pruning)")
+    p_decay.add_argument("--preview", action="store_true", help="Dry-run: show what would decay")
+    p_decay.set_defaults(func=cmd_decay)
+
+    # consolidate
+    p_consol = sub.add_parser("consolidate", help="Memory consolidation (replay + bridge)")
+    p_consol.set_defaults(func=cmd_consolidate)
+
+    # neurogenesis
+    p_neuro = sub.add_parser("neurogenesis", aliases=["neuro"], help="Generate insight neurons")
+    p_neuro.set_defaults(func=cmd_neurogenesis)
+
+    # neural-status
+    p_ns = sub.add_parser("neural-status", aliases=["ns"], help="All neural subsystem metrics")
+    p_ns.set_defaults(func=cmd_neural_status)
+
+    # working-memory
+    p_wm = sub.add_parser("wm", help="Working memory buffer")
+    p_wm.add_argument("--flush", action="store_true", help="Clear working memory")
+    p_wm.set_defaults(func=cmd_wm)
+
     args = parser.parse_args()
     setup_logging(getattr(args, "verbose", False))
 
@@ -466,3 +667,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

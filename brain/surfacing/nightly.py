@@ -2,6 +2,10 @@
 Proactive surfacing and brain health stats.
 
 Nightly cron (2am) generates:
+- synaptic decay pass (LTD + pruning)
+- memory consolidation (replay + bridge + promote)
+- neurogenesis (autonomous insight generation)
+- associative index rebuild
 - _meta/daily-surface.md  — 3 most relevant notes today
 - _meta/weekly-patterns.md — emerging patterns last 7 days
 - _meta/strong-synapses.md — top 10 strongest connections
@@ -42,14 +46,76 @@ class Surfacer:
         self.queue = queue or WriteQueue()
 
     def generate_all(self):
-        """Run all surfacing tasks. Called by nightly cron."""
-        logger.info("Starting nightly surfacing...")
+        """Run all nightly brain maintenance. Called by nightly cron."""
+        logger.info("Starting nightly brain maintenance...")
+
+        # Phase 1: Synaptic decay (LTD + pruning)
+        try:
+            from brain.decay import DecayEngine
+            decay = DecayEngine()
+            decay_result = decay.apply_decay()
+            logger.info("Decay: %s", decay_result)
+        except Exception as e:
+            logger.warning("Decay pass failed: %s", e)
+
+        # Phase 2: STDP pass on recent activity
+        try:
+            from brain.stdp import STDPEngine
+            stdp = STDPEngine()
+            stdp_result = stdp.run_stdp_pass(hours=24)
+            logger.info("STDP: %s", stdp_result)
+        except Exception as e:
+            logger.warning("STDP pass failed: %s", e)
+
+        # Phase 3: Memory consolidation
+        try:
+            from brain.consolidation import ConsolidationEngine
+            consol = ConsolidationEngine(
+                vault=self.vault, vectors=self.vectors,
+                synapses=self.synapses, router=self.router,
+            )
+            consol_result = consol.run_consolidation()
+            logger.info("Consolidation: %s", consol_result)
+        except Exception as e:
+            logger.warning("Consolidation failed: %s", e)
+
+        # Phase 4: Neurogenesis
+        try:
+            from brain.neurogenesis import NeurogenesisEngine
+            neuro = NeurogenesisEngine(
+                vault=self.vault, vectors=self.vectors,
+                synapses=self.synapses, router=self.router,
+            )
+            neuro_result = neuro.run_neurogenesis()
+            logger.info("Neurogenesis: %s", neuro_result)
+        except Exception as e:
+            logger.warning("Neurogenesis failed: %s", e)
+
+        # Phase 5: Rebuild associative recall index
+        try:
+            from brain.associative import AssociativeRecallEngine
+            assoc = AssociativeRecallEngine(vault=self.vault)
+            assoc.rebuild_index()
+        except Exception as e:
+            logger.warning("Associative index rebuild failed: %s", e)
+
+        # Phase 6: Reports and surfacing
         self.generate_brain_stats()
         self.generate_daily_surface()
         self.generate_strong_synapses()
         self.generate_weekly_patterns()
         self._scan_wikilinks()
-        logger.info("Nightly surfacing complete")
+
+        # Phase 7: Cleanup old events
+        try:
+            from brain.eventbus import EventBus
+            EventBus.get().purge_old_events(keep_days=30)
+            from brain.stdp import STDPEngine
+            STDPEngine().purge_old_events(keep_days=7)
+        except Exception:
+            pass
+
+        logger.info("Nightly brain maintenance complete")
 
     def _scan_wikilinks(self):
         """Scan entire vault for wikilinks and reinforce synapses."""

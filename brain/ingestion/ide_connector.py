@@ -31,13 +31,34 @@ class IDEConversationParser:
     @staticmethod
     def parse_overview(filepath: Path) -> dict:
         """Parse overview.txt → {title, themes, total_exchanges, raw_content}."""
+        import json
+        import re
         if not filepath.exists():
             return {}
         content = filepath.read_text(encoding="utf-8", errors="ignore")
         lines = content.strip().split("\n")
 
-        user_msgs = [l[5:].strip() for l in lines if l.strip().startswith("USER:")]
-        title = user_msgs[0][:100] if user_msgs else "IDE Session"
+        user_msgs = []
+        full_text = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+                if data.get("type") == "USER_INPUT" and "content" in data:
+                    match = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", data["content"], re.DOTALL)
+                    if match:
+                        user_msgs.append(match.group(1).strip())
+                    else:
+                        user_msgs.append(data["content"].strip())
+                if "content" in data and isinstance(data["content"], str):
+                    full_text.append(data["content"])
+            except json.JSONDecodeError:
+                if line.strip().startswith("USER:"):
+                    user_msgs.append(line[5:].strip())
+                full_text.append(line)
+
+        title = user_msgs[0][:100].replace("\n", " ").strip() if user_msgs else "IDE Session"
 
         code_patterns = {
             "debugging": ["error", "fix", "bug", "fail"],
@@ -46,7 +67,7 @@ class IDEConversationParser:
             "optimization": ["optimize", "performance", "speed"],
         }
         themes = []
-        cl = content.lower()
+        cl = " ".join(full_text).lower()
         for theme, kws in code_patterns.items():
             if any(k in cl for k in kws):
                 themes.append(theme)
@@ -54,8 +75,8 @@ class IDEConversationParser:
         return {
             "title": title,
             "themes": themes,
-            "total_exchanges": len(user_msgs),
-            "raw_content": content,
+            "total_exchanges": len(user_msgs) or (len(lines) // 2),
+            "raw_content": "\n".join(full_text),
         }
 
     @staticmethod
@@ -113,34 +134,20 @@ class IDEHandler(FileSystemEventHandler):
 
     def _ingest_conversation(self, overview_path: Path):
         parsed = self.parser.parse_overview(overview_path)
-        if not parsed or parsed.get("total_exchanges", 0) < 2:
+        if not parsed or parsed.get("total_exchanges", 0) < 1:
             return
 
-        memory = MemoryNeuron(
-            title=f"IDE: {parsed['title']}",
-            source=NeuronSource.ANTIGRAVITY_IDE.value,
-            raw_log_path=str(overview_path),
-            key_themes=parsed.get("themes", []),
-            body=f"IDE session: {parsed['title']}. "
-                 f"{parsed['total_exchanges']} exchanges. "
-                 f"Themes: {', '.join(parsed.get('themes', ['general']))}",
-        )
-        self.vault.write_neuron(memory)
+        text = parsed.get("raw_content", "")
+        if not text:
+            return
 
-        decisions = self.parser.extract_decisions(parsed.get("raw_content", ""))
-        for d in decisions:
-            n = AtomicNeuron(
-                region="prefrontal", title=d[:100],
-                source=NeuronSource.ANTIGRAVITY_IDE.value,
-                tags=["ide-decision"], body=d,
-            )
-            self.vault.write_neuron(n)
-            memory.atomic_children.append(n.id)
-
-        if memory.atomic_children:
-            self.vault.write_neuron(memory)
-
-        logger.info(f"IDE ingested: {memory.id}, decisions={len(decisions)}")
+        session_id = overview_path.parent.parent.name
+        filename = f"IDE_Session_{session_id}.txt"
+        out_path = Paths.INBOX / filename
+        
+        # Write to inbox for the watcher/processor to pick up
+        out_path.write_text(f"IDE Session: {parsed.get('title', 'Unknown')}\n\n{text}", encoding="utf-8")
+        logger.info(f"Dropped IDE session into inbox: {filename}")
 
 
 class IDEWatcher:
@@ -176,6 +183,7 @@ class IDEWatcher:
         """Ingest recent existing conversations."""
         if not self._ide_dir.exists():
             return
+        self._handler.vault.sync_id_counters()
         from datetime import datetime, timedelta
         cutoff = datetime.now() - timedelta(days=since_days)
         count = 0

@@ -219,7 +219,46 @@ class Router:
         self._groq_client = None
         self._gemini_model = None
         self._history = ConversationHistory()
+
+        # ── Neural subsystems (lazy — only import when Router is used) ──
+        self._working_memory = None
+        self._stdp = None
+        self._activation = None
+        self._thalamus = None
+        self._emotional_gate = None
+        self._associative = None
+        self._bus = None
+        self._subsystems_registered = False
+
         logger.info("Router Ollama endpoint: %s", HTTP.sanitized_origin(API.OLLAMA_HOST, "Ollama"))
+
+    def _ensure_subsystems(self):
+        """Lazy-init all neural subsystems on first use."""
+        if self._subsystems_registered:
+            return
+        try:
+            from brain.eventbus import EventBus
+            from brain.stdp import STDPEngine
+            from brain.working_memory import WorkingMemoryBuffer
+            from brain.activation import SpreadingActivationEngine
+            from brain.thalamus import ThalamusRelay
+            from brain.emotional_gate import EmotionalGate
+            from brain.associative import AssociativeRecallEngine
+
+            self._bus = EventBus.get()
+            self._stdp = STDPEngine()
+            self._stdp.register(self._bus)
+            self._working_memory = WorkingMemoryBuffer()
+            self._working_memory.register(self._bus)
+            self._activation = SpreadingActivationEngine()
+            self._thalamus = ThalamusRelay()
+            self._emotional_gate = EmotionalGate()
+            self._associative = AssociativeRecallEngine()
+            self._subsystems_registered = True
+            logger.info("All neural subsystems initialized")
+        except Exception as e:
+            logger.warning("Neural subsystem init failed (non-fatal): %s", e)
+            self._subsystems_registered = True  # don't retry
 
     # ── Mode Detection ───────────────────────────────────
 
@@ -405,22 +444,84 @@ class Router:
     ) -> dict:
         """Route a query to the appropriate AI.
 
-        Injects conversation history and semantic context.
-        Returns {mode, response, provider, query}.
+        Full neural pipeline:
+        1. Working memory → primed context
+        2. Associative recall → tag/fuzzy/temporal hits
+        3. Thalamus → cross-region semantic search
+        4. Spreading activation → graph-connected context
+        5. Emotional gate → re-rank by emotional salience
+        6. LLM call
+        7. Event emissions (STDP, working memory update)
+
+        Returns {mode, response, provider, query, context_sources}.
         """
+        self._ensure_subsystems()
         mode = self.detect_mode(query)
         clean_query = self.strip_mode_tag(query)
 
-        # Build full prompt with conversation history + semantic context
+        # ── Build context from multiple retrieval pathways ──
         parts = []
+        context_neuron_ids: list[str] = []
+        context_sources: list[str] = []
+
+        # 1. Conversation history
         history = self._history.get_context()
         if history:
             parts.append(history)
+
+        # 2. Working memory (primed concepts — zero-cost)
+        if self._working_memory:
+            wm_context = self._working_memory.get_context_string()
+            if wm_context:
+                parts.append(wm_context)
+                context_neuron_ids.extend(self._working_memory.get_primed_ids())
+                context_sources.append("working_memory")
+
+        # 3. Associative recall for RECALL mode
+        if self._associative and mode == "RECALL":
+            try:
+                assoc_hits = self._associative.recall(clean_query, limit=3)
+                if assoc_hits:
+                    assoc_text = "\n".join(
+                        f"[{h.get('neuron_id', '')}] {h.get('title', h.get('snippet', '')[:200])}"
+                        for h in assoc_hits
+                    )
+                    parts.append(f"Associative recall:\n{assoc_text}")
+                    context_neuron_ids.extend(h.get("neuron_id", "") for h in assoc_hits)
+                    context_sources.append("associative")
+            except Exception as e:
+                logger.debug("Associative recall failed: %s", e)
+
+        # 4. Caller-provided context (backwards compat)
         if context:
             parts.append(f"Context from memory:\n{context}")
+
+        # 5. Spreading activation from seed neurons
+        if self._activation and context_neuron_ids:
+            try:
+                activated = self._activation.activate(context_neuron_ids[:5], top_k=3)
+                if activated:
+                    # Load content for activated neurons
+                    from brain.vault import Vault
+                    vault = Vault()
+                    act_parts = []
+                    for a in activated:
+                        n = vault.read_neuron_by_id(a["neuron_id"])
+                        if n:
+                            act_parts.append(
+                                f"[{a['neuron_id']} activation={a['activation']}] {n.title}: {n.body[:150]}"
+                            )
+                            context_neuron_ids.append(a["neuron_id"])
+                    if act_parts:
+                        parts.append(f"Graph-activated context:\n" + "\n".join(act_parts))
+                        context_sources.append("spreading_activation")
+            except Exception as e:
+                logger.debug("Spreading activation failed: %s", e)
+
         parts.append(f"Query: {clean_query}")
         full_prompt = "\n\n".join(parts)
 
+        # ── Route to LLM ──
         provider = "unknown"
         response = ""
 
@@ -441,7 +542,7 @@ class Router:
                     provider = "ollama-fallback"
                     response = self.ask_local(full_prompt, system_prompt)
 
-        # Record exchange in history
+        # ── Post-query neural events ──
         self._history.add_exchange(
             redact_pii(clean_query),
             redact_pii(response),
@@ -449,9 +550,28 @@ class Router:
             provider=provider,
         )
 
+        # Emit events for real-time subsystems
+        if self._bus:
+            # Record all accessed neurons for STDP
+            if context_neuron_ids:
+                self._bus.emit("neuron.accessed", {
+                    "neuron_ids": list(set(context_neuron_ids)),
+                    "context": "query",
+                })
+
+            # Query completed → updates working memory, triggers downstream
+            self._bus.emit("query.completed", {
+                "query": clean_query,
+                "mode": mode,
+                "provider": provider,
+                "context_neuron_ids": list(set(context_neuron_ids)),
+                "context_sources": context_sources,
+            })
+
         return {
             "mode": mode,
             "response": response,
             "provider": provider,
             "query": clean_query,
+            "context_sources": context_sources,
         }
